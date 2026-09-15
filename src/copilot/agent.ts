@@ -6,7 +6,13 @@ const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 async function runAgent() {
-  const repoName = process.argv[2] || "Atolada-anchor";
+  const repoName = process.argv[2];
+  
+  if (!repoName) {
+    console.error("❌ [Erro] Por favor, informe o nome do repositório. Exemplo: sec nexavor");
+    process.exit(1);
+  }
+
   const owner = "mrcoantonioconceicao-ctrl";
   const branch = "main";
 
@@ -27,6 +33,42 @@ async function runAgent() {
       recursive: "true",
     });
 
+    const files = treeData.tree.map((item: any) => item.path).filter(Boolean);
+    console.log(`[Enterprise Agent] Mapeados ${files.length} arquivos totais no repositório.`);
+
+    // 1. Verificação Automática do README.md
+    const hasReadme = files.some((p: string) => p.toLowerCase() === "readme.md");
+    if (!hasReadme) {
+      console.log(`📖 [SecOps Docs] README.md ausente detectado. Gerando documentação automática via IA...`);
+      try {
+        const fileListSample = files.slice(0, 30).join("\n");
+        const prompt = `Crie um README.md profissional, moderno e completo em Markdown para o repositório "${repoName}". Baseie-se na lista de arquivos do projeto:\n${fileListSample}\n\nRetorne APENAS o conteúdo em Markdown puro, sem blocos de código markdown adicionais encapsulando a resposta.`;
+
+        const response = await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: prompt,
+        });
+
+        const readmeContent = response.text?.trim() || `# ${repoName}\n\nRepositório gerenciado pelo Enterprise SecOps Agent.`;
+
+        await applyAdvancedDeterministicPatch({
+          octokit,
+          owner,
+          repo: repoName,
+          branch,
+          path: "README.md",
+          targetSearch: "", // Criação de novo arquivo
+          replacementContent: readmeContent,
+          commitMessage: `docs(secops): auto-generate comprehensive README.md`,
+        });
+
+        console.log(`✅ [SecOps Docs] README.md gerado e commitado com sucesso!`);
+      } catch (readmeErr: any) {
+        console.warn(`⚠️ [SecOps Docs Error] Não foi possível gerar o README automaticamente:`, readmeErr.message);
+      }
+    }
+
+    // 2. Filtro de Código para Auditoria de Segurança
     const codeFiles = treeData.tree.filter((item: any) => 
       item.type === "blob" && (
         item.path?.endsWith(".ts") || 
@@ -36,8 +78,6 @@ async function runAgent() {
         item.path?.endsWith(".env")
       )
     );
-
-    console.log(`[Enterprise Agent] Mapeados ${codeFiles.length} arquivos para auditoria profunda.`);
 
     let aiQuotaExhausted = false;
 
@@ -57,7 +97,7 @@ async function runAgent() {
 
       let fixApplied = false;
 
-      // 1. Tentativa via Inteligência Artificial (Oráculo Gemini)
+      // Análise via IA
       if (!aiQuotaExhausted) {
         try {
           const prompt = `Analise o arquivo "${file.path}" em busca de vulnerabilidades de segurança, falhas OWASP ou brechas on-chain. Retorne APENAS um JSON puro: { "hasIssue": boolean, "targetSearch": string, "replacementContent": string, "reason": string } ou { "hasIssue": false }. Código:\n${fileCode}`;
@@ -95,7 +135,7 @@ async function runAgent() {
         }
       }
 
-      // 2. Motor Determinístico de Remediação e Blindagem Automática
+      // Motor Determinístico de Fallback
       if (!fixApplied) {
         const secretRegex = /(ghp_[a-zA-Z0-9]{36}|AIzaSy[a-zA-Z0-9_-]{33}|sk_live_[0-9a-zA-Z]{24})/g;
         if (secretRegex.test(fileCode)) {
@@ -155,7 +195,7 @@ async function runAgent() {
       }
     }
 
-    console.log(`🚀 [Enterprise SecOps Agent] Ciclo de auditoria, correção e commit concluído com sucesso!`);
+    console.log(`🚀 [Enterprise SecOps Agent] Ciclo de varredura, documentação e remediação concluído com sucesso!`);
 
   } catch (error: any) {
     console.error(`❌ [SecOps Agent Error] Erro crítico:`, error.message);
