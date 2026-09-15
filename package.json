@@ -1,0 +1,17 @@
+{
+  "name": "secops-agent",
+  "version": "1.0.0",
+  "description": "Autonomous Enterprise SecOps Agent with Deterministic and AI Fallback Engines",
+  "main": "src/copilot/agent.ts",
+  "scripts": {
+    "start": "tsx src/copilot/agent.ts"
+  },
+  "dependencies": {
+    "@google/genai": "^0.1.1",
+    "@octokit/rest": "^20.0.2"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  }
+}
