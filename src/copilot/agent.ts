@@ -176,7 +176,7 @@ async function runAgent() {
           }
         }
 
-        if (fileCode.includes("origin: '*'") || fileCode.includes("origin:\"*\"")) {
+        if (fileCode.includes("origin: process.env.ALLOWED_ORIGIN || 'https://enterprise-secure.com'") || fileCode.includes("origin:\"*\"")) {
           console.log(`🛡️ [Motor Determinístico] Corrigindo CORS inseguro em ${file.path}...`);
           const target = fileCode.includes("origin: '*'") ? "origin: '*'" : 'origin:"*"';
           
