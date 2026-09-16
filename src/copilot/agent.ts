@@ -57,7 +57,7 @@ async function runAgent() {
           repo: repoName,
           branch,
           path: "README.md",
-          targetSearch: "", // Criação de novo arquivo
+          targetSearch: "", 
           replacementContent: readmeContent,
           commitMessage: `docs(secops): auto-generate comprehensive README.md`,
         });
@@ -155,8 +155,17 @@ async function runAgent() {
           fixApplied = true;
         }
 
-        if (file.path.endsWith(".rs") && fileCode.includes("pub fn ") && !fileCode.includes("Signer")) {
-          console.log(`🛡️ [Motor Web3] Reforçando segurança em contrato Rust: ${file.path}...`);
+        // Filtro estrito: Apenas contratos/instruções Solana/Anchor reais (evita falsos positivos em utils/hash/parsers)
+        const isSolanaSmartContract = 
+          (file.path.includes("instruction") || 
+           file.path.includes("program") || 
+           file.path.includes("processor") ||
+           file.path.includes("contract")) &&
+          (fileCode.includes("Context<") || fileCode.includes("#[derive(Accounts)]")) &&
+          !fileCode.includes("Signer");
+
+        if (file.path.endsWith(".rs") && isSolanaSmartContract) {
+          console.log(`🛡️ [Motor Web3 Real] Reforçando segurança estrita em contrato Anchor: ${file.path}...`);
           const targetFuncMatch = fileCode.match(/(pub fn \w+\s*\(.*?\))/);
           if (targetFuncMatch) {
             const originalFunc = targetFuncMatch[1];
