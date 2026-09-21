@@ -119,19 +119,43 @@ async function runAgent() {
 
       let fixApplied = false;
 
-      // Análise via IA
+      // Análise via IA com parsing defensivo e saneamento de JSON
       if (!aiQuotaExhausted) {
         try {
-          const prompt = `Analise o arquivo "${targetPath}" em busca de vulnerabilidades de segurança, falhas OWASP ou brechas on-chain/meta-specs. Retorne APENAS um JSON puro: { "hasIssue": boolean, "targetSearch": string, "replacementContent": string, "reason": string } ou { "hasIssue": false }. Código:\n${fileCode}`;
+          const maxSnippetLen = 15000;
+          const truncatedCode = fileCode.length > maxSnippetLen 
+            ? fileCode.slice(0, maxSnippetLen) + "\n// ... [truncado pelo secops-agent por limite de contexto]" 
+            : fileCode;
+
+          const prompt = `Você é um auditor de segurança sênior focado em OWASP e Web3/Rust/Anchor.
+Analise o arquivo "${targetPath}" e retorne estritamente um JSON válido (sem markdown, sem backticks, apenas o objeto JSON cru):
+{
+  "hasIssue": boolean,
+  "targetSearch": string,
+  "replacementContent": string,
+  "reason": string
+}
+Se não houver problemas críticos, retorne: {"hasIssue": false}
+
+Código:
+${truncatedCode}`;
 
           const response = await ai.models.generateContent({
             model: "gemini-2.5-flash",
             contents: prompt,
           });
 
-          const textResponse = response.text?.trim() || "{ \"hasIssue\": false }";
-          const cleanedJson = textResponse.replace(/```json/g, "").replace(/```/g, "").trim();
-          const diagnosis = JSON.parse(cleanedJson);
+          const rawText = response.text?.trim() || '{"hasIssue": false}';
+          const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+          const cleanJsonStr = jsonMatch ? jsonMatch[0] : '{"hasIssue": false}';
+          
+          let diagnosis: any = { hasIssue: false };
+          try {
+            diagnosis = JSON.parse(cleanJsonStr);
+          } catch (parseErr) {
+            console.warn(`⚠️ [IA Parser Warning] JSON malformado retornado pelo modelo para ${targetPath}. Ignorando sugestão IA.`);
+            diagnosis = { hasIssue: false };
+          }
 
           if (diagnosis.hasIssue && diagnosis.targetSearch && diagnosis.replacementContent) {
             console.log(`⚠️ [IA Alerta de Segurança]: ${diagnosis.reason}`);
@@ -148,11 +172,14 @@ async function runAgent() {
             fixApplied = true;
           }
         } catch (apiError: any) {
-          if (apiError.message?.includes("429") || apiError.message?.includes("RESOURCE_EXHAUSTED") || apiError.message?.includes("503")) {
+          const errMsg = apiError.message || String(apiError);
+          if (errMsg.includes("429") || errMsg.includes("RESOURCE_EXHAUSTED") || errMsg.includes("503")) {
             if (!aiQuotaExhausted) {
-              console.warn(`⚠️ [Fallback Ativado]: Cota da IA esgotada. Ativando Motor Determinístico.`);
+              console.warn(`⚠️ [Fallback Ativado]: Cota da IA esgotada (${errMsg}). Ativando Motor Determinístico.`);
               aiQuotaExhausted = true;
             }
+          } else {
+            console.warn(`⚠️ [IA Error não-fatal em ${targetPath}]:`, errMsg);
           }
         }
       }
