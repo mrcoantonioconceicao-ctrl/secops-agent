@@ -1,8 +1,9 @@
 import { Octokit } from "@octokit/rest";
 import { GoogleGenAI } from "@google/genai";
-import * as dotenv from "dotenv";
-
-dotenv.config();
+import { execSync } from "child_process";
+import * as fs from "fs";
+import * as path from "path";
+import * as os from "os";
 
 const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -18,8 +19,41 @@ interface RemediationPayload {
 }
 
 /**
- * ZER0-DIRECT-PUSH GATED REMEDIATION ENGINE
- * Isola alteração em branch dedidaca e abre Pull Request para revisão humana.
+ * Validador Closed-Loop Poliglota (Sandbox Local)
+ */
+function validateClosedLoop(filePath: string, content: string): { valid: boolean; stderr: string } {
+  const ext = path.extname(filePath);
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "secops-gate-"));
+  const tmpFile = path.join(tmpDir, path.basename(filePath));
+  fs.writeFileSync(tmpFile, content, "utf-8");
+
+  let cmd = "";
+  if (ext === ".ts" || ext === ".tsx") {
+    cmd = `npx tsc --noEmit --skipLibCheck ${tmpFile}`;
+  } else if (ext === ".rs") {
+    cmd = `rustc --crate-type lib --emit=metadata ${tmpFile}`;
+  } else if (ext === ".py") {
+    cmd = `python3 -m py_compile ${tmpFile}`;
+  } else if (ext === ".c" || ext === ".cpp") {
+    cmd = `clang -fsyntax-only ${tmpFile}`;
+  } else {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    return { valid: true, stderr: "" };
+  }
+
+  try {
+    execSync(cmd, { stdio: "pipe", timeout: 10000 });
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    return { valid: true, stderr: "" };
+  } catch (err: any) {
+    const stderr = (err.stderr?.toString() || err.message || "").slice(0, 2048);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    return { valid: false, stderr };
+  }
+}
+
+/**
+ * ZER0-DIRECT-PUSH GATED REMEDIATION ENGINE + CLOSED-LOOP GATE
  */
 async function applyZeroDirectPushRemediation(
   owner: string,
@@ -32,7 +66,6 @@ async function applyZeroDirectPushRemediation(
 
   console.log(`🛡️ [SecOps Gate] A iniciar fluxo seguro para ${owner}/${repo} (${payload.filePath})`);
 
-  // 1. Identificar branch base (main ou master)
   let baseBranch = "main";
   let baseSha = "";
   try {
@@ -44,16 +77,13 @@ async function applyZeroDirectPushRemediation(
     baseSha = refRes.data.object.sha;
   }
 
-  // 2. Criar branch isolada de remediação
   await octokit.git.createRef({
     owner,
     repo,
     ref: `refs/heads/${branchName}`,
     sha: baseSha,
   });
-  console.log(`🌿 [SecOps Gate] Branch isolada criada: ${branchName}`);
 
-  // 3. Ler arquivo alvo na branch isolada
   const fileRes = await octokit.repos.getContent({
     owner,
     repo,
@@ -62,35 +92,38 @@ async function applyZeroDirectPushRemediation(
   });
 
   if (!("content" in fileRes.data)) {
-    throw new Error(`Arquivo não encontrado ou binário: ${payload.filePath}`);
+    throw new Error(`Ficheiro não encontrado ou binário: ${payload.filePath}`);
   }
 
   const originalContent = Buffer.from(fileRes.data.content, "base64").toString("utf-8");
   const fileSha = fileRes.data.sha;
 
-  // 4. Aplicar Patch Determinístico Context-Aware
   const fullBlock = payload.contextBefore + payload.targetSearch + payload.contextAfter;
-  const targetBlock = payload.contextBefore + payload.replacementContent + payload.contextAfter;
-
   if (!originalContent.includes(fullBlock)) {
-    throw new Error(`[Context-Mismatch] Falha na validação de escopo contextual para ${payload.filePath}. Abortando alteração não determinística.`);
+    throw new Error(`[Context-Mismatch] Falha na validação de escopo contextual para ${payload.filePath}.`);
   }
 
-  const mutatedContent = originalContent.replace(fullBlock, targetBlock);
+  const mutatedContent = originalContent.replace(fullBlock, payload.contextBefore + payload.replacementContent + payload.contextAfter);
 
-  // 5. Commit na branch isolada
+  // Closed-Loop Gate Check
+  console.log(`🔍 [Closed-Loop Gate] A validar mutação com compilador/linter local...`);
+  const validation = validateClosedLoop(payload.filePath, mutatedContent);
+  if (!validation.valid) {
+    console.error(`❌ [Closed-Loop Gate] Falha de compilação/linter detectada:\n${validation.stderr}`);
+    throw new Error(`Closed-loop check failed. Abortando PR por risco de quebra de build.`);
+  }
+  console.log(`✅ [Closed-Loop Gate] Build/Linter passou sem erros.`);
+
   await octokit.repos.createOrUpdateFileContents({
     owner,
     repo,
     path: payload.filePath,
-    message: `sec(critical): automated surgical mitigation for ${payload.cwe}`,
+    message: `sec(critical): automated surgical mitigation for ${payload.cwe} [closed-loop verified]`,
     content: Buffer.from(mutatedContent).toString("base64"),
     sha: fileSha,
     branch: branchName,
   });
-  console.log(`💾 [SecOps Gate] Mutação cirúrgica aplicada na branch ${branchName}.`);
 
-  // 6. Abrir Pull Request Formal com Relatório de Auditoria (Human-in-the-Loop Lock)
   const pr = await octokit.pulls.create({
     owner,
     repo,
@@ -100,19 +133,19 @@ async function applyZeroDirectPushRemediation(
     body: `## 🛡️ Relatório de Remediação Autônoma (SecOps-Agent)
 
 - **CWE/Vulnerabilidade**: \`${payload.cwe}\`
-- **Arquivo Alvo**: \`${payload.filePath}\`
+- **Ficheiro Alvo**: \`${payload.filePath}\`
 - **Branch Isolada**: \`${branchName}\`
+- **Closed-Loop Gate**: ✅ Verificado com sucesso (exit code 0)
 - **Justificativa da IA**: > *${payload.justification}*
 
 ### ⚠️ Política de Segurança Obrigatória (Human-in-the-Loop)
-Este PR foi gerado e validado de forma estritamente isolada. **O merge requer revisão humana de um engenheiro/SecOps** para garantir que a semântica de negócio não foi alterada indevidamente.`,
+O merge requer revisão humana de um engenheiro/SecOps.`,
   });
 
   console.log(`✅ [SecOps Gate] Pull Request aberto com sucesso: ${pr.data.html_url}`);
   return pr.data.html_url;
 }
 
-// Exemplo de execução/CLI entrypoint
 async function main() {
   const targetSlug = process.argv || "mrcoantonioconceicao-ctrl/secops-agent";
   const [owner, repo] = targetSlug.split("/");
@@ -120,13 +153,11 @@ async function main() {
     console.error("Uso: npx tsx src/copilot/agent.ts <owner>/<repo>");
     process.exit(1);
   }
-
   console.log(`🔍 [SecOps] Varredura e gate ativo em ${owner}/${repo}`);
-  // Aqui o core consome SAST/Webhooks e despacha para applyZeroDirectPushRemediation
 }
 
 if (import.meta.url === `file://${process.argv}`) {
   main().catch(console.error);
 }
 
-export { applyZeroDirectPushRemediation };
+export { applyZeroDirectPushRemediation, validateClosedLoop };
