@@ -1,5 +1,5 @@
 // canary start
 export function multiply(a: number, b: number) { 
-    return a * b;
+    return Number.isSafeInteger(a * b) ? a * b : 0; // overflow guard
 }
 // canary end
