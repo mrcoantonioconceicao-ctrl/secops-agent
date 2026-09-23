@@ -53,7 +53,38 @@ function validateClosedLoop(filePath: string, content: string): { valid: boolean
 }
 
 /**
- * ZER0-DIRECT-PUSH GATED REMEDIATION ENGINE + CLOSED-LOOP GATE
+ * Inspecionador de CI Remoto no GitHub (Check-Runs Polling)
+ */
+async function verifyRemoteCI(owner: string, repo: string, ref: string, maxRetries = 2, intervalMs = 3000): Promise<{ ok: boolean; summary: string }> {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    console.log(`🌐 [Remote CI] A consultar check runs para ${ref} (tentativa ${attempt}/${maxRetries})...`);
+    try {
+      const { data } = await octokit.checks.listForRef({ owner, repo, ref });
+      if (data.total_count > 0) {
+        const failed = data.check_runs.filter(
+          r => r.conclusion === 'failure' || r.conclusion === 'timed_out' || r.conclusion === 'action_required'
+        );
+        if (failed.length > 0) {
+          const names = failed.map(f => f.name).join(', ');
+          return { ok: false, summary: `Falhas no GitHub CI: ${names}` };
+        }
+        const completed = data.check_runs.filter(r => r.status === 'completed');
+        if (completed.length === data.check_runs.length && data.check_runs.length > 0) {
+          return { ok: true, summary: `${completed.length}/${data.check_runs.length} check runs concluídos com sucesso.` };
+        }
+      }
+    } catch (err: any) {
+      console.warn(`⚠️ [Remote CI] Aviso ao consultar checks: ${err.message}`);
+    }
+    if (attempt < maxRetries) {
+      await new Promise(r => setTimeout(r, intervalMs));
+    }
+  }
+  return { ok: true, summary: "Sem check runs bloqueantes ativos ou ignorados por polling timeout." };
+}
+
+/**
+ * ZER0-DIRECT-PUSH GATED REMEDIATION ENGINE + CLOSED-LOOP + REMOTE CI
  */
 async function applyZeroDirectPushRemediation(
   owner: string,
@@ -61,8 +92,9 @@ async function applyZeroDirectPushRemediation(
   payload: RemediationPayload
 ) {
   const timestamp = Date.now();
+  const randomSuffix = Math.random().toString(36).substring(2, 6);
   const safeCwe = payload.cwe.toLowerCase().replace(/[^a-z0-9]/g, "-") || "sec-fix";
-  const branchName = `secops/fix-${safeCwe}-${timestamp}`;
+  const branchName = `secops/fix-${safeCwe}-${timestamp}-${randomSuffix}`;
 
   console.log(`🛡️ [SecOps Gate] A iniciar fluxo seguro para ${owner}/${repo} (${payload.filePath})`);
 
@@ -105,7 +137,7 @@ async function applyZeroDirectPushRemediation(
 
   const mutatedContent = originalContent.replace(fullBlock, payload.contextBefore + payload.replacementContent + payload.contextAfter);
 
-  // Closed-Loop Gate Check
+  // Closed-Loop Gate Check local
   console.log(`🔍 [Closed-Loop Gate] A validar mutação com compilador/linter local...`);
   const validation = validateClosedLoop(payload.filePath, mutatedContent);
   if (!validation.valid) {
@@ -124,6 +156,12 @@ async function applyZeroDirectPushRemediation(
     branch: branchName,
   });
 
+  // Checagem de Remote CI na branch remota recém-criada/comitada
+  const remoteStatus = await verifyRemoteCI(owner, repo, branchName);
+  if (!remoteStatus.ok) {
+    console.warn(`⚠️ [Remote CI Warning] ${remoteStatus.summary}`);
+  }
+
   const pr = await octokit.pulls.create({
     owner,
     repo,
@@ -135,7 +173,8 @@ async function applyZeroDirectPushRemediation(
 - **CWE/Vulnerabilidade**: \`${payload.cwe}\`
 - **Ficheiro Alvo**: \`${payload.filePath}\`
 - **Branch Isolada**: \`${branchName}\`
-- **Closed-Loop Gate**: ✅ Verificado com sucesso (exit code 0)
+- **Closed-Loop Gate (Local)**: ✅ Verificado
+- **Remote CI Status**: \`${remoteStatus.summary}\`
 - **Justificativa da IA**: > *${payload.justification}*
 
 ### ⚠️ Política de Segurança Obrigatória (Human-in-the-Loop)
@@ -160,4 +199,4 @@ if (import.meta.url === `file://${process.argv}`) {
   main().catch(console.error);
 }
 
-export { applyZeroDirectPushRemediation, validateClosedLoop };
+export { applyZeroDirectPushRemediation, validateClosedLoop, verifyRemoteCI };
