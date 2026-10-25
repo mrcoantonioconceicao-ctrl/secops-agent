@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Permissões padrão para o APE incluindo ferramentas do agente de sistema",
+  "windows": ["*"],
+  "permissions": [
+    "core:default",
+    "opener:default",
+    "core:allow-invoke-handler",
+    "allow:agent_fs_read_file",
+    "allow:agent_fs_write_file",
+    "allow:agent_fs_move_path",
+    "allow:agent_fs_delete_path",
+    "allow:agent_fs_list_dir",
+    "allow:agent_terminal_exec"
+  ]
+}
